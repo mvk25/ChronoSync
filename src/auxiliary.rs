@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 
 pub fn push_path(mut path: PathBuf, end_path: &str) {
     path.push(end_path);

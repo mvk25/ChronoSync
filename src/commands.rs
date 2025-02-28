@@ -1,9 +1,15 @@
-use std::env;
+use core::hash;
+use std::ffi::CString;
+use std::{env, path::Path};
 use std::env::VarError;
 use std::fs;
-use std::io::Error;
+use std::io::{Error, Read};
+use std::slice;
+use hex_literal::hex;
+use sha1::{Sha1, Digest};
 
 use crate::auxiliary::{push_dir, push_path};
+use crate::args::{HashObject};
 
 pub fn init() -> Result<(), std::io::Error> {
     // Initialise our working directory
@@ -50,6 +56,29 @@ pub fn init() -> Result<(), std::io::Error> {
     }
     
 
+
+    Ok(())
+}
+
+// We are going to generate a hash for a blob with this function
+pub fn hash_object(args: HashObject) -> std::io::Result<()> {
+    let mut hasher = Sha1::new();
+    let mut file = fs::File::open(args.file).unwrap();
+
+    let mut buf = String::new();
+    file.read_to_string(&mut buf).unwrap();
+    
+    let blob = buf.as_bytes();
+    let blob_len = blob.len();
+
+    let header = format!("blob {}", blob_len);
+    let header = CString::new(header).expect("CString failed");
+
+    let header_bytes = header.as_bytes_with_nul();
+    let hash_object = [header_bytes, blob].concat();
+    
+    hasher.update(hash_object);
+    hasher.finalize();
 
     Ok(())
 }
