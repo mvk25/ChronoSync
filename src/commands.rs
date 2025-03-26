@@ -1,21 +1,23 @@
-use core::hash;
 use std::ffi::CString;
-use std::{env, path::Path};
+use std::path::PathBuf;
+use std::env;
 use std::env::VarError;
 use std::fs;
 use std::io::{Error, Read};
-use std::slice;
-use hex_literal::hex;
 use sha1::{Sha1, Digest};
+use std::sync::OnceLock;
 
-use crate::auxiliary::{push_dir, push_path};
-use crate::args::{HashObject};
+#[allow(dead_code)]
 
-pub fn init() -> Result<(), std::io::Error> {
+use crate::auxiliary::{push_recursive_dir, push_path, traverse_directory};
+
+pub static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn init() -> Result<(), Box<dyn std::error::Error>> {
     // Initialise our working directory
-    let mut path = env::current_dir().unwrap();
-    println!("The current directory is {}", path.display());
-    
+    if ROOT.set(env::current_dir().unwrap()).is_err() {
+        panic!("ROOT is already initialised");
+    }
     // Create the .warp directory
     // If we dont have a WARP_DIRECTORY env var, we just use .warp
     // We are currently using io::Errors
@@ -39,17 +41,18 @@ pub fn init() -> Result<(), std::io::Error> {
     match warp_directory {
         Ok(_) => {
             // create config, description and HEAD files
-            path.push(  warp_dir.as_str());
+            let mut root = ROOT.get().expect("Init command not called").to_owned();
+            root.push(  warp_dir.as_str());
             
-            push_path(path.clone(), "config");
-            push_path(path.clone(), "description");
-            push_path(path.clone(), "HEAD");
+            push_path(root.clone(), "config");
+            push_path(root.clone(), "description");
+            push_path(root.clone(), "HEAD");
 
             // Create subdirectories objects, refs/heads, refs/tags
-            push_dir(path.clone(), "refs", vec!["heads", "tags"]);
-            push_dir(path.clone(), "objects", vec!["info", "pack"]);
-            push_dir(path.clone(), "branches", vec![]);
-            println!("{}", path.display());
+            push_recursive_dir(root.clone(), "refs", vec!["heads", "tags"]);
+            push_recursive_dir(root.clone(), "objects", vec!["info", "pack"]);
+            push_recursive_dir(root.clone(), "branches", vec![]);
+            println!("{}", root.display());
             
         },
         Err(_) => todo!(),
@@ -61,9 +64,9 @@ pub fn init() -> Result<(), std::io::Error> {
 }
 
 // We are going to generate a hash for a blob with this function
-pub fn hash_object(args: HashObject) -> std::io::Result<()> {
+pub fn hash_object(args: PathBuf) -> Result<String, Box<dyn std::error::Error>> {
     let mut hasher = Sha1::new();
-    let mut file = fs::File::open(args.file).unwrap();
+    let mut file = fs::File::open(args).unwrap();
 
     let mut buf = String::new();
     file.read_to_string(&mut buf).unwrap();
@@ -78,7 +81,23 @@ pub fn hash_object(args: HashObject) -> std::io::Result<()> {
     let hash_object = [header_bytes, blob].concat();
     
     hasher.update(hash_object);
-    hasher.finalize();
+    let result = hasher.finalize();
+    Ok(hex::encode(result))
+}
+
+pub fn add(args: Vec<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    // let root = ROOT.get().expect("Unable to get the current working directory");
+    let root = env::current_dir().expect("Unable to get the current working directory");
+    println!("{:?}", root.file_name().unwrap());
+    // // create a index file inside the .git if it does not exists
+    // let mut warp_dir = root.clone();
+    // warp_dir.push(".warp");
+
+    // if !file_exists(&warp_dir, "index") {
+    //     push_path(warp_dir.clone(), "index");
+    // }
+    
+    traverse_directory(&root);
 
     Ok(())
 }

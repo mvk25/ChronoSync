@@ -1,20 +1,28 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
-#[derive(Parser, Debug)]
-#[command(name= "warp")]
+
+#[derive(Debug, Parser)]
+#[command(name = "warp")]
 #[command(about = "Chrono Version Control")]
-pub enum Csync {
-    Init,
-    Hash(HashObject)
-
+pub struct Warp {
+    #[command(subcommand)]
+    pub command: Commands,
 }
 
-#[derive(Parser, Debug)]
-struct Init;
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    Init,
+    Hash {
+        #[arg(required = true)]
+        path: PathBuf
+    },
+    Add {
+        #[arg(required = true)]
+        path: Vec<PathBuf>
+    },
+    UpdateIndex {
 
-#[derive(Parser, Debug)]
-pub struct HashObject {
-    pub file: PathBuf
+    }
 }
