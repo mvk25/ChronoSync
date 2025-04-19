@@ -1,5 +1,5 @@
 use core::{error, fmt};
-use std::{fmt::Debug, io::{BufReader, Cursor, Read}, time::{Duration, SystemTime}};
+use std::{fmt::Debug, io::{BufReader, Cursor, Read}, thread::sleep, time::{Duration, SystemTime}};
 use hex_literal::hex;
 use chrono::{DateTime, Utc};
 
@@ -104,13 +104,7 @@ pub struct IndexEntry {
     // 1 - 8 bytes nul bytes necessary to pad the entry.
 }
 
-impl IndexEntry {
-    // fn new(ctime_s: u32, ctime_n: u32, mtime: u32, mtime_s: u32, dev: u32, ino: u32, mode: u32, uid: u32, gid: u32, filesize: u32, sha: [u8; 20], flags: u16, path: String) -> Self {
 
-    // }
-}
-
-const epoch: SystemTime = SystemTime::UNIX_EPOCH;
 impl Debug for IndexEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexEntry")
@@ -132,7 +126,7 @@ impl Debug for IndexEntry {
 }
 
 impl TryFrom<&mut Cursor<&[u8]>> for IndexEntry {
-    type Error = String;
+    type Error = String; // I will write the error logic some other time lol(Everything seems to work fine for now).
 
     fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
         let mut buffer = [0u8; 40];
@@ -165,27 +159,120 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexEntry {
     }
 }
 
-#[derive(Debug)]
-pub enum IndexExtension {
-    CacheTree(CacheTreeExtension),
-    Unknown {
-        signature: [u8; 4],
-        data: Vec<u8>,
-    },
+#[derive(Clone)]
+pub struct IndexExtension {
+    signature: [u8; 4],
+    extension_size: u32,
+    extension_data: CacheTreeEntry
 }
 
-#[derive(Debug)]
+impl Debug for IndexExtension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IndexExtension")
+         .field("signature", &String::from_utf8_lossy(&self.signature))
+         .field("extension_size", &self.extension_size)
+         .field("extension_data", &self.extension_data)
+         .finish()
+    }
+}
+impl TryFrom<&mut Cursor<&[u8]>> for IndexExtension {
+    type Error = String;
+
+    fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+        let mut buffer = [0u8; 4];
+        reader.read_exact(&mut buffer);
+
+        let signature = buffer;
+
+        reader.read_exact(&mut buffer);
+        let extension_size = u32::from_be_bytes(buffer);
+
+
+        let mut extension_data = vec![0u8; extension_size as usize];
+        reader.read_exact(&mut extension_data);
+
+        let cache_entry = CacheTreeEntry::try_from(extension_data).unwrap();
+
+        Ok(IndexExtension { signature, extension_size, extension_data: cache_entry})
+    }
+}
+
+#[derive(Clone)]
 pub struct CacheTreeEntry {
     pub path: String,
-    pub entry_count: u32,
-    pub subtree_count: u32,
+    pub entry_count: u8,
+    pub subtree_count: u8,
     pub sha: [u8; 20],
-    pub subtrees: Vec<CacheTreeEntry>
+    pub subtrees: Option<Vec<CacheTreeEntry>>
 }
 
-#[derive(Debug)]
-pub struct CacheTreeExtension {
-    pub entries: Vec<CacheTreeEntry>
+impl Debug for CacheTreeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CacheTreeEntry")
+         .field("path", &self.path)
+         .field("entry_count", &self.entry_count)
+         .field("subtree_count", &self.subtree_count)
+         .field("sha", &self.sha.iter().map(|ch| format!("{:02x}", ch)).collect::<String>())
+         .field("subtrees", &self.subtrees)
+         .finish()
+    }
+}
+
+fn create_cache(reader: &mut BufReader<&[u8]>) -> CacheTreeEntry {
+    let mut single_byte = [0u8; 1];
+    let mut path = String::new();
+    // Nul terminated path component
+    while let Ok(_) = reader.read_exact(&mut single_byte) {
+        if single_byte[0] == 0 {
+            break;
+        } else {
+            path.push(single_byte[0].into());
+        }
+    }
+
+    // ASCII Entry count
+    reader.read_exact(&mut single_byte);
+    let entry_count = u8::from_be_bytes(single_byte) - 48;
+
+    // ASCII Space
+    reader.read_exact(&mut single_byte);
+
+    // ASCII number of subtrees
+    reader.read_exact(&mut single_byte);
+    let subtree_count = u8::from_be_bytes(single_byte) - 48;
+    
+    let subtrees: Option<Vec<CacheTreeEntry>>;
+
+    // ASCII newline
+    reader.read_exact(&mut single_byte);
+    let mut sha = [0u8; 20];
+    
+    // SHA tree object
+    reader.read_exact(&mut sha);
+
+    if subtree_count > 0 {
+        let mut trees: Vec<CacheTreeEntry> = Vec::new();
+        for _ in 0..subtree_count {
+            trees.push(create_cache(reader));
+        }
+
+        subtrees = Some(trees);
+    } else {
+        subtrees = None;
+    }
+    
+
+    return CacheTreeEntry { path, entry_count, subtree_count, sha, subtrees };
+}
+
+
+impl TryFrom<Vec<u8>> for CacheTreeEntry {
+    type Error = String;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut reader = BufReader::new(value.as_slice());
+        Ok(create_cache(&mut reader))
+    }
 }
 
 #[derive(Debug)]
@@ -198,7 +285,6 @@ pub enum IndexParseError {
     InvalidExtension
 }
 
-#[derive(Debug)]
 pub struct WarpIndex {
     pub header: IndexHeader,
     pub entries: Vec<IndexEntry>,
@@ -206,73 +292,71 @@ pub struct WarpIndex {
     pub checksum: [u8; 20]
 }
 
-// impl TryFrom<&mut Cursor<&[u8]>> for WarpIndex {
-//     type Error = IndexParseError;
+impl Debug for WarpIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarpIndex")
+         .field("header", &self.header)
+         .field("entries", &self.entries)
+         .field("extensions", &self.extensions)
+         .field("checksum", &self.checksum.iter().map(|ch| format!("{:02x}", ch)).collect::<String>())
+         .finish()
+    }
+}
 
-//     fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
-//         let header = IndexHeader::try_from(reader)?;
-//         let entries = IndexEntry::try_from(reader)?;
-//     }
-// }
+impl TryFrom<&mut Cursor<&[u8]>> for WarpIndex {
+    type Error = IndexParseError;
+
+    fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+        let header = IndexHeader::try_from(&mut *reader).unwrap();
+        let mut entries: Vec<IndexEntry> = Vec::new();
+        for _ in 0..header.entry_count {
+
+            entries.push(IndexEntry::try_from(&mut *reader).unwrap());
+        }
+        let extensions = IndexExtension::try_from(&mut *reader).unwrap();
+
+        let mut checksum = [0u8; 20];
+        reader.read_exact(&mut checksum);
+
+        Ok(WarpIndex {
+            header,
+            entries,
+            extensions,
+            checksum
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
-    fn test_warp_index() {
+    fn test_header_bytes() {
         let mut reader = Cursor::new(INDEX_DATA);
-        let test_header = IndexHeader::new([68, 73, 82, 67], 2, 5);
-        let byte_header = IndexHeader::try_from(&mut reader).unwrap();
+        let test_header = IndexHeader::try_from(&mut reader).unwrap();
+        let header = IndexHeader::new([68, 73, 82, 67], 2, 5);
 
-        let entry_one = IndexEntry::try_from(&mut reader).unwrap();
-        print!("{:?}", entry_one);
-
-        assert_eq!(test_header, byte_header);
+        assert_eq!(test_header, header);
     }
 
     #[test]
-    fn test_header_from_bytes() {
-        // let test_header = IndexHeader::new([68, 73, 82, 67], 2, 5);
-        // let byte_header = IndexHeader::try_from(INDEX_DATA).unwrap();
+    fn test_index_entries() {
+        let mut reader = Cursor::new(INDEX_DATA);
+        let _ = IndexHeader::try_from(&mut reader).unwrap();
+        let test_entry = IndexEntry::try_from(&mut reader).unwrap();
 
-        // assert_eq!(test_header, byte_header);
-
+        assert_eq!(test_entry.path, "filea.txt".to_string());
+        assert_eq!(test_entry.sha.iter().map(|ch| format!("{:02x}", ch)).collect::<String>(), "77ef3bbc6c333c6088eba7a7b0c4c26203ed9765".to_string());
     }
 
-    const INDEX_DATA: &[u8] = &hex!(
-        "44 49 52 43 00 00 00 02 00 00 00 05 67 f1 65 1b
-        32 01 66 9e 67 f1 65 1b 32 01 66 9e 00 00 08 02
-        00 92 bc db 00 00 81 a4 00 00 03 e8 00 00 03 e8
-        00 00 00 0d 77 ef 3b bc 6c 33 3c 60 88 eb a7 a7
-        b0 c4 c2 62 03 ed 97 65 00 09 66 69 6c 65 61 2e
-        74 78 74 00 67 f1 65 a3 2a 45 0f 65 67 f1 65 a3
-        2a 45 0f 65 00 00 08 02 00 92 bc dd 00 00 81 a4
-        00 00 03 e8 00 00 03 e8 00 00 00 0b d0 26 4d 77
-        65 9d c7 e6 f7 ad 0a 62 19 8a 15 7e 95 7b b9 2a
-        00 09 66 69 6c 65 62 2e 74 78 74 00 67 f1 74 22
-        05 e5 db a4 67 f1 74 22 05 e5 db a4 00 00 08 02
-        00 a0 ba dc 00 00 81 a4 00 00 03 e8 00 00 03 e8
-        00 00 00 05 92 ba ab df 84 82 1c 93 c8 8a 45 a4
-        34 fb 4e 88 ce 0d 08 c4 00 13 73 72 63 2f 64 62
-        2f 70 6f 73 74 67 72 65 73 2e 74 78 74 00 00 00
-        00 00 00 00 67 f1 70 7e 1e 98 00 d6 67 f1 70 7e
-        1e 98 00 d6 00 00 08 02 00 9c b8 06 00 00 81 a4
-        00 00 03 e8 00 00 03 e8 00 00 00 0b 85 cb 6c 13
-        14 79 5d 06 61 0b f8 bd cb 88 cb f7 c5 99 49 28
-        00 0d 73 72 63 2f 66 69 6c 65 63 2e 74 78 74 00
-        00 00 00 00 67 f1 7a cf 26 b7 26 95 67 f1 7a cf
-        26 b7 26 95 00 00 08 02 00 9c b8 08 00 00 81 a4
-        00 00 03 e8 00 00 03 e8 00 00 00 05 b2 5f a3 fc
-        47 3b 6e fd 5d ed 03 bc dd bc 4d 37 fc 20 67 4b
-        00 0d 7a 65 64 2f 66 69 6c 65 64 2e 74 78 74 00
-        00 00 00 00 54 52 45 45 00 00 00 6c 00 35 20 32
-        0a d6 5f 1e 52 7c 08 b2 21 de 80 43 51 61 5c 52
-        7d 18 1b 10 2f 73 72 63 00 32 20 31 0a 91 dc 0d
-        3e 30 ad 86 93 c1 0e d2 3b a0 21 ed 2b e3 5c f0
-        28 64 62 00 31 20 30 0a 13 bb 37 bc 8c a7 10 20
-        99 91 8f 1a 7e 96 d4 a7 87 3a f4 38 7a 65 64 00
-        31 20 30 0a d0 39 fd 2d 7f 69 fe 87 ac 3e 6b 53
-        94 0a ec ff 72 ab 7a e6 53 b5 bf c2 83 67 bc 8a
-        af 62 e7 6f 76 ff a5 56 7f cd 2f ec");
+    #[test]
+    fn test_warp_index() {
+        let mut reader = Cursor::new(INDEX_DATA);
+        let warp_index = WarpIndex::try_from(&mut reader).unwrap();
+
+        assert_eq!(warp_index.checksum, hex!("53b5bfc28367bc8aaf62e76f76ffa5567fcd2fec"));
+    }
+
+    
 }
