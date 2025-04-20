@@ -4,9 +4,12 @@ mod auxiliary;
 mod blob;
 mod index;
 
+use std::io::Cursor;
+
 use blob::Blob;
 use clap::Parser;
 use commands::{init, add};
+use index::{WarpIndex, INDEX_DATA};
 use crate::args::Commands::{Init, Hash, Add, UpdateIndex};
 use crate::args::Warp;
 
@@ -24,6 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(())
             }
         Add { path } => add(path),
-        UpdateIndex {  } => todo!(),
+        UpdateIndex { add } => {
+            println!("{:?}", add);
+
+            Ok(())
+        },
     }
 }

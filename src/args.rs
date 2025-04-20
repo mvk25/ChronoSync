@@ -23,6 +23,13 @@ pub enum Commands {
         path: Vec<PathBuf>
     },
     UpdateIndex {
+        #[arg(
+            long,
+            value_name = "FILENAME",
+            num_args = 1..,
+            help = "Stage a file"
+        )]
+        add: Vec<PathBuf>
 
     }
 }

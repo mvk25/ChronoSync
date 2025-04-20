@@ -14,6 +14,11 @@ use crate::auxiliary::{push_recursive_dir, push_path, traverse_directory};
 pub static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn init() -> Result<(), Box<dyn std::error::Error>> {
+    // (Importante): Later on, we have to add a feature, where we first scan if .warp exists on an upper tree
+    // wherever this function is called on, and restrict it from continuing, since we have a .warp file
+    // already initialised. We know to have a way of knowing the root directory(This should be known by 
+    // the first init call), OnceLock is not working!!.
+
     // Initialise our working directory
     if ROOT.set(env::current_dir().unwrap()).is_err() {
         panic!("ROOT is already initialised");
@@ -31,7 +36,7 @@ pub fn init() -> Result<(), Box<dyn std::error::Error>> {
             match e {
                 VarError::NotPresent => {
                     warp_dir += ".warp";
-                    Ok(fs::create_dir(".warp").unwrap())
+                    Ok(fs::create_dir(".warp").expect("Directory already exists"))
                 },
                 VarError::NotUnicode(err_msg) => Err(Error::new(std::io::ErrorKind::Other, err_msg.to_str().unwrap()))
             }

@@ -1,7 +1,7 @@
-use core::{error, fmt};
-use std::{fmt::Debug, io::{BufReader, Cursor, Read}, thread::sleep, time::{Duration, SystemTime}};
+use core::fmt;
+use std::{ffi::CString, fmt::Debug, io::{BufReader, Cursor, Read}};
 use hex_literal::hex;
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 
 pub const INDEX_DATA: &[u8] = &hex!(
     "44 49 52 43 00 00 00 02 00 00 00 05 67 f1 65 1b
@@ -54,6 +54,17 @@ impl IndexHeader {
             entry_count
         }
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        bytes.extend(self.signature);
+        bytes.extend(self.version.to_be_bytes());
+        bytes.extend(self.entry_count.to_be_bytes());
+
+        bytes
+
+    }
 }
 
 impl fmt::Debug for IndexHeader {
@@ -104,6 +115,39 @@ pub struct IndexEntry {
     // 1 - 8 bytes nul bytes necessary to pad the entry.
 }
 
+impl IndexEntry {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        bytes.extend(&self.ctime_seconds.to_be_bytes());
+        bytes.extend(&self.ctime_nanoseconds.to_be_bytes());
+        bytes.extend(&self.mtime_seconds.to_be_bytes());
+        bytes.extend(&self.mtime_nanoseconds.to_be_bytes());
+        
+        bytes.extend(&self.dev.to_be_bytes());
+        bytes.extend(&self.ino.to_be_bytes());
+
+        bytes.extend(&self.mode.to_be_bytes());
+
+        bytes.extend(&self.uid.to_be_bytes());
+        bytes.extend(&self.gid.to_be_bytes());
+
+        bytes.extend(&self.filesize.to_be_bytes());
+
+        bytes.extend(&self.sha);
+        bytes.extend(&self.flags.to_be_bytes());
+
+        bytes.extend(self.path.as_bytes());
+        bytes.push(0); // Null terminator
+        
+        // Pad to multiple of 8 bytes
+        let padding = (8 - (bytes.len() % 8)) % 8;
+        bytes.extend(vec![0; padding]);
+        
+        bytes
+    }
+}
+
 
 impl Debug for IndexEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -114,7 +158,7 @@ impl Debug for IndexEntry {
          .field("mtime_nanoseconds", &DateTime::from_timestamp(self.mtime_seconds.into(), self.mtime_nanoseconds.into()).unwrap())
          .field("dev", &self.dev)
          .field("ino", &self.ino)
-         .field("mode", &self.mode)
+         .field("mode", &format!("{:o}", &self.mode))
          .field("uid", &self.uid)
          .field("gid", &self.gid)
          .field("filesize", &self.filesize)
@@ -166,6 +210,18 @@ pub struct IndexExtension {
     extension_data: CacheTreeEntry
 }
 
+impl IndexExtension {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        bytes.extend(&self.signature);
+        bytes.extend(&self.extension_size.to_be_bytes());
+        self.extension_data.to_bytes(&mut bytes);
+
+        bytes
+    }
+}
+
 impl Debug for IndexExtension {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexExtension")
@@ -199,11 +255,33 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexExtension {
 
 #[derive(Clone)]
 pub struct CacheTreeEntry {
-    pub path: String,
+    pub path: Vec<u8>,
     pub entry_count: u8,
     pub subtree_count: u8,
     pub sha: [u8; 20],
     pub subtrees: Option<Vec<CacheTreeEntry>>
+}
+
+impl CacheTreeEntry {
+    pub fn to_bytes(&self, bytes: &mut Vec<u8>) -> Vec<u8> {
+        // let mut bytes = Vec::new();
+
+        bytes.extend(&self.path);
+        bytes.extend(&(self.entry_count + 48).to_be_bytes());
+        bytes.extend((32 as u8).to_be_bytes());
+        bytes.extend(&(self.subtree_count + 48).to_be_bytes());
+        bytes.extend((10 as u8).to_be_bytes());
+        bytes.extend(&self.sha);
+
+        if let None = self.subtrees {
+            return bytes.to_vec();
+        } else if let Some(subtrees) = &self.subtrees {
+            for subtree in subtrees {
+                subtree.to_bytes(bytes);
+            }
+        } 
+        bytes.to_vec()
+    }
 }
 
 impl Debug for CacheTreeEntry {
@@ -229,6 +307,9 @@ fn create_cache(reader: &mut BufReader<&[u8]>) -> CacheTreeEntry {
             path.push(single_byte[0].into());
         }
     }
+
+    let new_path = CString::new(path).unwrap();
+    let x = new_path.as_bytes_with_nul().to_owned();
 
     // ASCII Entry count
     reader.read_exact(&mut single_byte);
@@ -262,7 +343,7 @@ fn create_cache(reader: &mut BufReader<&[u8]>) -> CacheTreeEntry {
     }
     
 
-    return CacheTreeEntry { path, entry_count, subtree_count, sha, subtrees };
+    return CacheTreeEntry { path: x, entry_count, subtree_count, sha, subtrees };
 }
 
 
@@ -290,6 +371,17 @@ pub struct WarpIndex {
     pub entries: Vec<IndexEntry>,
     pub extensions: IndexExtension,
     pub checksum: [u8; 20]
+}
+
+impl WarpIndex {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let index_header_bytes = self.header.to_bytes();
+        let index_entry_bytes = self.entries.iter().map(|entry| entry.to_bytes()).collect::<Vec<_>>().concat();
+        let extension_bytes = self.extensions.to_bytes();
+        let checksum_bytes = self.checksum.to_vec();
+
+        [index_header_bytes, index_entry_bytes, extension_bytes, checksum_bytes].concat()
+    }
 }
 
 impl Debug for WarpIndex {
@@ -352,10 +444,20 @@ mod tests {
 
     #[test]
     fn test_warp_index() {
-        let mut reader = Cursor::new(INDEX_DATA);
+        let mut reader =  Cursor::new(INDEX_DATA);
         let warp_index = WarpIndex::try_from(&mut reader).unwrap();
 
         assert_eq!(warp_index.checksum, hex!("53b5bfc28367bc8aaf62e76f76ffa5567fcd2fec"));
+    }
+
+    #[test]
+    fn test_warp_to_bytes() {
+        let mut reader = Cursor::new(INDEX_DATA);
+        let warp_index = WarpIndex::try_from(&mut reader).unwrap();
+
+        let warp_bytes = warp_index.to_bytes();
+
+        assert_eq!(warp_bytes, INDEX_DATA);
     }
 
     
