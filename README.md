@@ -61,14 +61,14 @@ When you initialize a ChronoSync repository with `warp init`, it creates a `.war
 ```bash
 git clone https://github.com/mvk25/ChronoSync
 cd ChronoSync
-cargo run
+cargo run 
 
 # 🛠️ Running ChronoSync
 
 Once you’ve built the project with Cargo, you can run ChronoSync directly from the terminal.
 
 ```bash
-$ ~/rust/projects/ChronoSync/target/release/ChronoSync --help
+$ warp --help
 ```
 
 ### 📖 Help Output
