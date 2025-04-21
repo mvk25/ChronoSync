@@ -26,6 +26,7 @@ pub enum Commands {
         #[arg(
             long,
             value_name = "FILENAME",
+            required = true,
             num_args = 1..,
             help = "Stage a file"
         )]

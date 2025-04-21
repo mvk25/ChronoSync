@@ -1,7 +1,10 @@
 use core::fmt;
-use std::{ffi::CString, fmt::Debug, io::{BufReader, Cursor, Read}};
+use std::{ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read}, os::unix::fs::MetadataExt, path::PathBuf};
 use hex_literal::hex;
 use chrono::DateTime;
+use sha1::{Sha1, Digest};
+
+use crate::blob::Blob;
 
 pub const INDEX_DATA: &[u8] = &hex!(
     "44 49 52 43 00 00 00 02 00 00 00 05 67 f1 65 1b
@@ -38,6 +41,18 @@ pub const INDEX_DATA: &[u8] = &hex!(
     31 20 30 0a d0 39 fd 2d 7f 69 fe 87 ac 3e 6b 53
     94 0a ec ff 72 ab 7a e6 53 b5 bf c2 83 67 bc 8a
     af 62 e7 6f 76 ff a5 56 7f cd 2f ec");
+
+pub const NO_TREE: &[u8] = &hex!("
+    444952430000000200000003680604fb049d5c37680604fb049d5c370000
+    0802008488dc000081a4000003e8000003e80000000b303ff981c488b812
+    b6215f7db7920dedb3b59d9a000966696c65612e74787400680605312b56
+    bb72680605312b56bb7200000802008488de000081a4000003e8000003e8
+    0000000c1c59427adc4b205a270d8f810310394962e79a8b000966696c65
+    622e747874006806057c2ba31aaa6806057c2ba31aaa000008020086c9c1
+    000081a4000003e8000003e80000000b667bb3858a056cc96e79c0c3b1ed
+    fb60135c2359000d7372632f66696c65632e74787400000000001238db55
+    255645bdf17b967d57cc8ecf6015ffae
+    ");
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct IndexHeader {
@@ -369,18 +384,107 @@ pub enum IndexParseError {
 pub struct WarpIndex {
     pub header: IndexHeader,
     pub entries: Vec<IndexEntry>,
-    pub extensions: IndexExtension,
+    pub extensions: Option<IndexExtension>,
     pub checksum: [u8; 20]
 }
 
+fn generic_index() -> PathBuf{
+    let mut root = std::env::current_dir().expect("Unable to get the current working directory");
+    root.push(".warp");
+    root.push("index");
+    root
+}
+
+pub fn index_file_exists() -> bool {
+    let root = generic_index();
+
+    root.is_file()
+}
+
+pub fn create_new_index() -> fs::File {
+    let root = generic_index();
+    fs::File::create(root).expect("Unable to create a index file")
+}
 impl WarpIndex {
     pub fn to_bytes(&self) -> Vec<u8> {
         let index_header_bytes = self.header.to_bytes();
         let index_entry_bytes = self.entries.iter().map(|entry| entry.to_bytes()).collect::<Vec<_>>().concat();
-        let extension_bytes = self.extensions.to_bytes();
+        let extension_bytes = self.extensions.as_ref().unwrap().to_bytes();
         let checksum_bytes = self.checksum.to_vec();
 
         [index_header_bytes, index_entry_bytes, extension_bytes, checksum_bytes].concat()
+    }
+
+
+
+    pub fn update_index(paths: Vec<PathBuf>) -> Self {
+        let index;
+        if !index_file_exists() {
+            index = create_new_index();
+            let entry_count = paths.len();
+            // Create our header
+            let new_index_header = IndexHeader::new([68, 73, 82, 67], 2, entry_count as u32);
+            let mut index_entries = Vec::new();
+            for file in paths {
+                let metadata = fs::metadata(&file).expect("Unable to get metadata about this file");
+                let blob: Blob = Blob::new(file.clone());
+                let blob_sha: String = blob.hash_object().unwrap();
+                let sha_bytes = hex::decode(&blob_sha).expect("Invalid hex in SHA");
+                let mut sha = [0u8; 20];
+                sha.copy_from_slice(&sha_bytes);
+                blob.compress_to_object();
+                let index_entry = IndexEntry {
+                    ctime_seconds: metadata.ctime() as u32,
+                    ctime_nanoseconds: metadata.ctime_nsec() as u32,
+                    mtime_seconds: metadata.mtime() as u32,
+                    mtime_nanoseconds: metadata.mtime_nsec() as u32,
+                    dev: metadata.dev() as u32,
+                    ino: metadata.ino() as u32,
+                    mode: metadata.mode(),
+                    uid: metadata.uid(),
+                    gid: metadata.gid(),
+                    filesize: metadata.len() as u32,
+                    sha,
+                    flags: file.file_name().unwrap().len() as u16,
+                    path: file.file_name().unwrap().to_string_lossy().to_string(),
+                };
+
+                index_entries.push(index_entry);
+            }
+            // let extension: Option<IndexExtension> = None;
+            
+            
+            // create a Sha1 object
+            let mut hasher = Sha1::new();
+            // process input message
+            
+            let mut bytes = Vec::new();
+            bytes.extend(new_index_header.to_bytes());
+            index_entries.iter().for_each(|entry| bytes.extend(entry.to_bytes()));
+            // Note the extension here is not needed
+            hasher.update(bytes);
+            let mut checksum = [0u8; 20];
+
+            let bytes = hasher.finalize();
+            checksum.copy_from_slice(bytes.as_slice());
+
+            WarpIndex {
+                header: new_index_header,
+                entries: index_entries,
+                extensions: None,
+                checksum,
+            }
+
+
+            // Create the IndexEntries from the paths
+            // IndexEntry
+        } else {
+            // index = fs::File::open(self.generic_index()).expect("Unable to open index file");
+            // Read this file into bytes.
+            // let file_length = fs::metadata(self.generic_index()).unwrap().len();
+            todo!()
+        }
+
     }
 }
 
@@ -405,7 +509,18 @@ impl TryFrom<&mut Cursor<&[u8]>> for WarpIndex {
 
             entries.push(IndexEntry::try_from(&mut *reader).unwrap());
         }
-        let extensions = IndexExtension::try_from(&mut *reader).unwrap();
+        let mut signature = [0u8; 4];
+        let extensions;
+        reader.read_exact(&mut signature);
+        if signature == [84, 82, 69, 69] {
+            reader.set_position(reader.position() - 4);
+            extensions = Some(IndexExtension::try_from(&mut *reader).unwrap());
+        } else {
+            reader.set_position(reader.position() - 4);
+            extensions = None;
+        }
+        // Read the next four bytes here. If it is the signature tree, we return some, 
+        // otherwise extensions is none.
 
         let mut checksum = [0u8; 20];
         reader.read_exact(&mut checksum);
@@ -459,6 +574,4 @@ mod tests {
 
         assert_eq!(warp_bytes, INDEX_DATA);
     }
-
-    
 }

@@ -9,7 +9,7 @@ use std::io::Cursor;
 use blob::Blob;
 use clap::Parser;
 use commands::{init, add};
-use index::{WarpIndex, INDEX_DATA};
+use index::{WarpIndex, INDEX_DATA, NO_TREE};
 use crate::args::Commands::{Init, Hash, Add, UpdateIndex};
 use crate::args::Warp;
 
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         Add { path } => add(path),
         UpdateIndex { add } => {
-            println!("{:?}", add);
+            println!("{:?}", WarpIndex::update_index(add));
 
             Ok(())
         },

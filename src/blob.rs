@@ -5,9 +5,9 @@ use std::{ffi::CString, fs, io::Read, path::PathBuf};
 use sha1::{Digest, Sha1};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use crate::commands::ROOT;
 
 
+#[derive(Clone)]
 pub struct Blob {
     filename: PathBuf
 }
