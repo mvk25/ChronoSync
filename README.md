@@ -59,6 +59,61 @@ When you initialize a ChronoSync repository with `warp init`, it creates a `.war
 ### Installation
 
 ```bash
-git clone https://github.com/your-repo/chronosync
-cd chronosync
-cargo install --path .
+git clone https://github.com/mvk25/ChronoSync
+cd ChronoSync
+cargo run
+
+# 🛠️ Running ChronoSync
+
+Once you’ve built the project with Cargo, you can run ChronoSync directly from the terminal.
+
+```bash
+$ ~/rust/projects/ChronoSync/target/release/ChronoSync --help
+```
+
+### 📖 Help Output
+
+```
+Chrono Version Control
+
+Usage: ChronoSync <COMMAND>
+
+Commands:
+  init            Initialize a new ChronoSync repository
+  hash            Compute object hash of a file
+  add             (Planned) Add files to staging
+  update-index    Update the index file from working directory
+  help            Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help      Print help
+```
+
+---
+
+## 📦 Example Usage
+
+### Initialize a repository
+
+warp here could be how you have saved the name of the executable
+```bash
+warp init
+```
+
+### Compute a hash of a file
+
+```bash
+warp hash <PATH>
+```
+
+### Update index with a file
+
+```bash
+$ warp update-index --help
+```
+
+```
+Usage: ChronoSync update-index --add <FILENAME>...
+
+Options:
+  -h, --help      Print help
