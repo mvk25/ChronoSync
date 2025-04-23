@@ -31,6 +31,6 @@ pub enum Commands {
             help = "Stage a file"
         )]
         add: Vec<PathBuf>
-
-    }
+    },
+    WriteTree
 }

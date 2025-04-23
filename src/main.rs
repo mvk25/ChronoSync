@@ -4,19 +4,26 @@ mod auxiliary;
 mod blob;
 mod index;
 
-use std::io::Cursor;
+use std::fs;
+use std::io::{Cursor, Write};
 
 use blob::Blob;
 use clap::Parser;
 use commands::{init, add};
 use index::{WarpIndex, INDEX_DATA, NO_TREE};
-use crate::args::Commands::{Init, Hash, Add, UpdateIndex};
+use crate::args::Commands::{Init, Hash, Add, UpdateIndex, WriteTree};
 use crate::args::Warp;
 
 
 
 #[warn(unused_variables)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // let mut reader = Cursor::new(INDEX_DATA);
+    // println!("{:#?}", WarpIndex::try_from(&mut reader));
+    
+    // let mut reader = Cursor::new(NO_TREE);
+    // println!("{:#?}", WarpIndex::try_from(&mut reader));
+    // // Ok(())
     let args = Warp::parse();
     match args.command {
         Init => init(),
@@ -28,9 +35,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         Add { path } => add(path),
         UpdateIndex { add } => {
-            println!("{:?}", WarpIndex::update_index(add));
+            let index = WarpIndex::update_index(add);
+            // let mut path = std::env::current_dir().unwrap();
+            // path.push(".warp");
+            // path.push("index");
+
+            // println!("{:?}", path);
+            // fs::OpenOptions::new().write(true).open(path).unwrap().write_all(&index.to_bytes()).unwrap();
+            println!("{:#?}", index);
 
             Ok(())
         },
+        WriteTree => {
+            // Creating an extension from an entry.c
+            WarpIndex::write_tree();
+            Ok(())
+        }
     }
 }

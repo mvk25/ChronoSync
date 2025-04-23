@@ -1,10 +1,10 @@
-use core::fmt;
-use std::{ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read}, os::unix::fs::MetadataExt, path::PathBuf};
+use core::{fmt, slice};
+use std::{ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
 
-use crate::blob::Blob;
+use crate::{args::Warp, blob::Blob};
 
 pub const INDEX_DATA: &[u8] = &hex!(
     "44 49 52 43 00 00 00 02 00 00 00 05 67 f1 65 1b
@@ -131,6 +131,32 @@ pub struct IndexEntry {
 }
 
 impl IndexEntry {
+    pub fn entry_from_file(file: PathBuf) -> IndexEntry {
+        let metadata = fs::metadata(&file).expect("Unable to get metadata about this file");
+        let blob: Blob = Blob::new(file.clone());
+        let blob_sha: String = blob.hash_object().unwrap();
+        let sha_bytes = hex::decode(&blob_sha).expect("Invalid hex in SHA");
+        let mut sha = [0u8; 20];
+        sha.copy_from_slice(&sha_bytes);
+        blob.compress_to_object();
+
+        Self {
+            ctime_seconds: metadata.ctime() as u32,
+            ctime_nanoseconds: metadata.ctime_nsec() as u32,
+            mtime_seconds: metadata.mtime() as u32,
+            mtime_nanoseconds: metadata.mtime_nsec() as u32,
+            dev: metadata.dev() as u32,
+            ino: metadata.ino() as u32,
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            filesize: metadata.len() as u32,
+            sha,
+            flags: file.file_name().unwrap().len() as u16,
+            path: file.file_name().unwrap().to_string_lossy().to_string(),
+        }
+    }
+    
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -406,16 +432,52 @@ pub fn create_new_index() -> fs::File {
     fs::File::create(root).expect("Unable to create a index file")
 }
 impl WarpIndex {
+    pub fn without_extension(entries: Vec<IndexEntry>) -> Self {
+        let new_index_header = IndexHeader::new([68, 73, 82, 67], 2, entries.len() as u32);
+        let mut hasher = Sha1::new();
+
+        let mut bytes = Vec::new();
+        bytes.extend(new_index_header.to_bytes());
+        entries.iter().for_each(|entry| bytes.extend(entry.to_bytes()));
+        hasher.update(bytes);
+        let mut checksum = [0u8; 20];
+
+        let bytes = hasher.finalize();
+        checksum.copy_from_slice(bytes.as_slice());
+
+        WarpIndex { header: new_index_header, entries, extensions: None, checksum }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let index_header_bytes = self.header.to_bytes();
         let index_entry_bytes = self.entries.iter().map(|entry| entry.to_bytes()).collect::<Vec<_>>().concat();
-        let extension_bytes = self.extensions.as_ref().unwrap().to_bytes();
+        let extension_bytes = match &self.extensions {
+            Some(ext) => ext.to_bytes(),
+            None => Vec::new()
+        };
+        // let extension_bytes = self.extensions.as_ref().unwrap().to_bytes();
         let checksum_bytes = self.checksum.to_vec();
 
         [index_header_bytes, index_entry_bytes, extension_bytes, checksum_bytes].concat()
     }
 
+    pub fn write_tree() {
+        // We create an index from the file
+        let mut index_path = std::env::current_dir().unwrap();
+        index_path.push(".warp");
+        index_path.push("index");
 
+        // Read the index to a buffer
+        let mut buffer = Vec::new();
+        let _ = fs::File::open(&index_path).unwrap().read_to_end(&mut buffer);
+
+        // Create a WarpIndex from the index fd
+        let warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
+
+
+        // Using the IndexEntry we create the extensions.
+        println!("{:#?}", warp_index.entries);
+    }
 
     pub fn update_index(paths: Vec<PathBuf>) -> Self {
         let index;
@@ -426,29 +488,7 @@ impl WarpIndex {
             let new_index_header = IndexHeader::new([68, 73, 82, 67], 2, entry_count as u32);
             let mut index_entries = Vec::new();
             for file in paths {
-                let metadata = fs::metadata(&file).expect("Unable to get metadata about this file");
-                let blob: Blob = Blob::new(file.clone());
-                let blob_sha: String = blob.hash_object().unwrap();
-                let sha_bytes = hex::decode(&blob_sha).expect("Invalid hex in SHA");
-                let mut sha = [0u8; 20];
-                sha.copy_from_slice(&sha_bytes);
-                blob.compress_to_object();
-                let index_entry = IndexEntry {
-                    ctime_seconds: metadata.ctime() as u32,
-                    ctime_nanoseconds: metadata.ctime_nsec() as u32,
-                    mtime_seconds: metadata.mtime() as u32,
-                    mtime_nanoseconds: metadata.mtime_nsec() as u32,
-                    dev: metadata.dev() as u32,
-                    ino: metadata.ino() as u32,
-                    mode: metadata.mode(),
-                    uid: metadata.uid(),
-                    gid: metadata.gid(),
-                    filesize: metadata.len() as u32,
-                    sha,
-                    flags: file.file_name().unwrap().len() as u16,
-                    path: file.file_name().unwrap().to_string_lossy().to_string(),
-                };
-
+                let index_entry = IndexEntry::entry_from_file(file);
                 index_entries.push(index_entry);
             }
             // let extension: Option<IndexExtension> = None;
@@ -479,10 +519,36 @@ impl WarpIndex {
             // Create the IndexEntries from the paths
             // IndexEntry
         } else {
-            // index = fs::File::open(self.generic_index()).expect("Unable to open index file");
-            // Read this file into bytes.
-            // let file_length = fs::metadata(self.generic_index()).unwrap().len();
-            todo!()
+            // Get the current index binary file
+            let mut index_path = std::env::current_dir().unwrap();
+            index_path.push(".warp");
+            index_path.push("index");
+
+            // Open it.
+            let mut index = fs::File::open(&index_path).unwrap();
+
+            // Read it into this buffer
+            let mut buffer = Vec::new();
+            let _ = index.read_to_end(&mut buffer).unwrap();
+
+            // Create a WarpIndex from the index file.
+            let warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
+
+            // Create entries from the the paths passed in the function
+            let mut index_entries = Vec::new();
+            for file in paths {
+                let index_entry = IndexEntry::entry_from_file(file);
+                index_entries.push(index_entry);
+            }
+
+            // Extend with the one from the index file. Sort before writing once again.
+            index_entries.extend_from_slice(&warp_index.entries);
+            index_entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+            let new_warp_index = WarpIndex::without_extension(index_entries);
+            // Write the bytes of this WarpIndex to the index file, we convert it to bytes format
+            fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&new_warp_index.to_bytes()).unwrap();
+            new_warp_index
         }
 
     }
