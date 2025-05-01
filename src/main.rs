@@ -35,14 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         Add { path } => add(path),
         UpdateIndex { add } => {
-            let index = WarpIndex::update_index(add);
-            // let mut path = std::env::current_dir().unwrap();
-            // path.push(".warp");
-            // path.push("index");
-
-            // println!("{:?}", path);
-            // fs::OpenOptions::new().write(true).open(path).unwrap().write_all(&index.to_bytes()).unwrap();
-            println!("{:#?}", index);
+            WarpIndex::update_index(add);
+            
 
             Ok(())
         },

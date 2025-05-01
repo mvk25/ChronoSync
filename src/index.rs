@@ -1,5 +1,5 @@
 use core::{fmt, slice};
-use std::{ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{collections::HashMap, ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read, Write}, ops::Index, os::unix::fs::MetadataExt, path::PathBuf};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
@@ -152,8 +152,9 @@ impl IndexEntry {
             gid: metadata.gid(),
             filesize: metadata.len() as u32,
             sha,
-            flags: file.file_name().unwrap().len() as u16,
-            path: file.file_name().unwrap().to_string_lossy().to_string(),
+            // flags: file.file_name().unwrap().len() as u16,
+            flags: file.to_string_lossy().len() as u16,
+            path: file.to_string_lossy().to_string(),
         }
     }
     
@@ -303,6 +304,38 @@ pub struct CacheTreeEntry {
     pub subtrees: Option<Vec<CacheTreeEntry>>
 }
 
+impl TryFrom<Vec<IndexEntry>> for CacheTreeEntry {
+    type Error = String; // Later!
+
+    fn try_from(entries: Vec<IndexEntry>) -> Result<Self, Self::Error> {
+        if entries.is_empty() {
+            return Err("Cannot create a CacheEntry from an empty list of entrues".to_string());
+        }
+
+        let mut path_map: HashMap<String, Vec<IndexEntry>> = HashMap::new();
+
+        for entry in entries {
+            let path = entry.path.clone();
+
+            let components: Vec<&str> = path.split('/').collect();
+
+            if components.len() == 1 {
+                path_map.entry("".to_string())
+                    .or_insert_with(Vec::new)
+                    .push(entry);
+            } else {
+                let dir = components[..components.len() - 1].join("/");
+                path_map.entry(dir)
+                    .or_insert_with(Vec::new)
+                    .push(entry);
+            }
+        }
+
+        println!("PATH_MAP: {:?}", path_map);
+        Err("I will implement it later!".to_string())
+    }
+}
+
 impl CacheTreeEntry {
     pub fn to_bytes(&self, bytes: &mut Vec<u8>) -> Vec<u8> {
         // let mut bytes = Vec::new();
@@ -427,9 +460,9 @@ pub fn index_file_exists() -> bool {
     root.is_file()
 }
 
-pub fn create_new_index() -> fs::File {
+pub fn create_new_index() {
     let root = generic_index();
-    fs::File::create(root).expect("Unable to create a index file")
+    fs::File::create(root).expect("Unable to create a index file");
 }
 impl WarpIndex {
     pub fn without_extension(entries: Vec<IndexEntry>) -> Self {
@@ -474,47 +507,29 @@ impl WarpIndex {
         // Create a WarpIndex from the index fd
         let warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
 
-
+        // I need to create a CacheEntry from the index entries file.
+        // Should we do sth like From/TryFrom<Vec<IndexEntry>> for CacheEntry 
+        println!("{:#?}", warp_index);
+        // let _ = CacheTreeEntry::try_from(warp_index.entries);
         // Using the IndexEntry we create the extensions.
-        println!("{:#?}", warp_index.entries);
     }
 
-    pub fn update_index(paths: Vec<PathBuf>) -> Self {
-        let index;
+    pub fn update_index(paths: Vec<PathBuf>) {
         if !index_file_exists() {
-            index = create_new_index();
-            let entry_count = paths.len();
-            // Create our header
-            let new_index_header = IndexHeader::new([68, 73, 82, 67], 2, entry_count as u32);
+            // Create an index file.
+            create_new_index(); // Todo : Proper Error Handling later on!!
+            let index = generic_index();
+            
+            // Create a vector of IndexEntries from the paths.
             let mut index_entries = Vec::new();
             for file in paths {
+                println!("FILE: {:?}", file);
                 let index_entry = IndexEntry::entry_from_file(file);
                 index_entries.push(index_entry);
             }
-            // let extension: Option<IndexExtension> = None;
             
-            
-            // create a Sha1 object
-            let mut hasher = Sha1::new();
-            // process input message
-            
-            let mut bytes = Vec::new();
-            bytes.extend(new_index_header.to_bytes());
-            index_entries.iter().for_each(|entry| bytes.extend(entry.to_bytes()));
-            // Note the extension here is not needed
-            hasher.update(bytes);
-            let mut checksum = [0u8; 20];
 
-            let bytes = hasher.finalize();
-            checksum.copy_from_slice(bytes.as_slice());
-
-            WarpIndex {
-                header: new_index_header,
-                entries: index_entries,
-                extensions: None,
-                checksum,
-            }
-
+            fs::OpenOptions::new().write(true).open(index).unwrap().write_all(&WarpIndex::without_extension(index_entries).to_bytes()).expect("Unable to write to the index file");
 
             // Create the IndexEntries from the paths
             // IndexEntry
@@ -547,8 +562,7 @@ impl WarpIndex {
 
             let new_warp_index = WarpIndex::without_extension(index_entries);
             // Write the bytes of this WarpIndex to the index file, we convert it to bytes format
-            fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&new_warp_index.to_bytes()).unwrap();
-            new_warp_index
+            fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&new_warp_index.to_bytes()).expect("Unable to write to the index file");
         }
 
     }
