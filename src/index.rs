@@ -1,11 +1,12 @@
-use core::{fmt, slice};
-use std::{collections::HashMap, ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read, Write}, ops::Index, os::unix::fs::MetadataExt, path::PathBuf};
+use core::fmt;
+use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs, hash::Hash, io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
 
-use crate::{args::Warp, blob::Blob};
-
+use crate::blob::Blob;
+#[allow(unused_variables)]
+#[allow(dead_code)]
 pub const INDEX_DATA: &[u8] = &hex!(
     "44 49 52 43 00 00 00 02 00 00 00 05 67 f1 65 1b
     32 01 66 9e 67 f1 65 1b 32 01 66 9e 00 00 08 02
@@ -100,9 +101,9 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexHeader {
         let mut version = [0u8; 4];
         let mut index_count = [0u8; 4];
 
-        reader.read_exact(&mut signature);
-        reader.read_exact(&mut version);
-        reader.read_exact(&mut index_count);
+        reader.read_exact(&mut signature).unwrap();
+        reader.read_exact(&mut version).unwrap();
+        reader.read_exact(&mut index_count).unwrap();
 
         let version: u32 = u32::from_be_bytes(version);
         let index_count: u32 = u32::from_be_bytes(index_count);
@@ -131,6 +132,7 @@ pub struct IndexEntry {
 }
 
 impl IndexEntry {
+    // TODO: This format only works for UNIX, add Mac and Windows support.
     pub fn entry_from_file(file: PathBuf) -> IndexEntry {
         let metadata = fs::metadata(&file).expect("Unable to get metadata about this file");
         let blob: Blob = Blob::new(file.clone());
@@ -152,7 +154,6 @@ impl IndexEntry {
             gid: metadata.gid(),
             filesize: metadata.len() as u32,
             sha,
-            // flags: file.file_name().unwrap().len() as u16,
             flags: file.to_string_lossy().len() as u16,
             path: file.to_string_lossy().to_string(),
         }
@@ -212,23 +213,23 @@ impl Debug for IndexEntry {
 }
 
 impl TryFrom<&mut Cursor<&[u8]>> for IndexEntry {
-    type Error = String; // I will write the error logic some other time lol(Everything seems to work fine for now).
+    type Error = String; // TODO: I will write the error logic some other time lol(Everything seems to work fine for now).
 
     fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
         let mut buffer = [0u8; 40];
-        reader.read_exact(&mut buffer);
+        reader.read_exact(&mut buffer).unwrap();
 
         let values = buffer.chunks_exact(4).map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap())).collect::<Vec<u32>>();
         let mut sha = [0u8; 20];
-        reader.read_exact(&mut sha);
+        reader.read_exact(&mut sha).unwrap();
 
         let mut flags: [u8; 2] = [0u8; 2];
-        reader.read_exact(&mut flags);
+        reader.read_exact(&mut flags).unwrap();
 
         let pathname_length: u16 = u16::from_be_bytes(flags);
 
         let mut path = vec![0u8; pathname_length as usize];
-        reader.read_exact(&mut path);
+        reader.read_exact(&mut path).unwrap();
 
         let mut single_byte = [0u8; 1];
         while let Ok(_) = reader.read_exact(&mut single_byte) {
@@ -278,16 +279,16 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexExtension {
 
     fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
         let mut buffer = [0u8; 4];
-        reader.read_exact(&mut buffer);
+        let _ = reader.read_exact(&mut buffer);
 
         let signature = buffer;
 
-        reader.read_exact(&mut buffer);
+        let _ = reader.read_exact(&mut buffer);
         let extension_size = u32::from_be_bytes(buffer);
 
 
         let mut extension_data = vec![0u8; extension_size as usize];
-        reader.read_exact(&mut extension_data);
+        let _ = reader.read_exact(&mut extension_data);
 
         let cache_entry = CacheTreeEntry::try_from(extension_data).unwrap();
 
@@ -295,6 +296,106 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexExtension {
     }
 }
 
+fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result<CacheTreeEntry, String> {
+    // We are able to get the next directories of the root using a hashset.
+    let mut sub_dirs = HashSet::new();
+
+    for dir_path in path_map.keys() {
+        if dir_path.starts_with(path) && dir_path != path {
+            let remaining = &dir_path[path.len()..];
+            println!("REMS: {}, PATH: {}", remaining, dir_path);
+            if !remaining.is_empty() {
+                let first_subdir = if path.is_empty() {
+                    remaining.split('/').next().unwrap().to_string()
+                } else {
+                    remaining.strip_prefix('/').unwrap_or(remaining).split('/').next().unwrap().to_string()
+                };
+
+                println!("FIRST DIRS: {}", first_subdir);
+                if !first_subdir.is_empty() {
+                    sub_dirs.insert(first_subdir);
+                }
+            }
+        }
+    }
+
+    // println!("SUBDIRS: {:?}", sub_dirs);
+    let current_entries = path_map.get(path).cloned().unwrap_or_default();
+
+    let mut subtrees= Vec::new();
+    let mut total_entry_count = current_entries.len();
+
+    for subdir in sub_dirs {
+        let subdir_path = if path.is_empty() {
+            subdir.clone()
+        } else {
+            format!("{}/{}", path, subdir)
+        };
+
+        let subtree = build_tree(&subdir_path, path_map)?;
+        total_entry_count += subtree.entry_count as usize;
+        subtrees.push(subtree);
+    }
+
+    // Create the tree content to hash
+    let mut tree_content = Vec::new();
+    
+    // Add entries for files in this directory
+    for entry in &current_entries {
+        let filename = entry.path.split('/').last().unwrap_or(&entry.path);
+        
+        // Format: "[mode] [filename]\0[SHA]"
+        let octal = format!("{:o}", entry.mode);
+        let mode_bytes = octal.as_bytes();
+        let space = b" ";
+        let filename_bytes = filename.as_bytes();
+        let null_byte = b"\0";
+        
+        tree_content.extend_from_slice(mode_bytes);
+        tree_content.extend_from_slice(space);
+        tree_content.extend_from_slice(filename_bytes);
+        tree_content.extend_from_slice(null_byte);
+        tree_content.extend_from_slice(&entry.sha);
+    }
+    
+    // Add entries for subdirectories
+    for subtree in &subtrees {
+        let dirname = subtree.path.split(|&b| b == b'/').last().unwrap_or(&subtree.path);
+        
+        // Format: "40000 [dirname]\0[SHA]"
+        let mode_bytes = b"40000";
+        let space = b" ";
+        let null_byte = b"\0";
+        
+        tree_content.extend_from_slice(mode_bytes);
+        tree_content.extend_from_slice(space);
+        tree_content.extend_from_slice(dirname);
+        tree_content.extend_from_slice(null_byte);
+        tree_content.extend_from_slice(&subtree.sha);
+    }
+    
+    // Hash the tree content
+    let header = format!("tree {}", tree_content.len());
+    let mut hasher = Sha1::new();
+    hasher.update(header.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&tree_content);
+    let sha = hasher.finalize();
+    
+    let mut sha_array = [0u8; 20];
+    sha_array.copy_from_slice(&sha);
+    
+    // Create and return the CacheTreeEntry
+    Ok(CacheTreeEntry {
+        path: path.as_bytes().to_vec(),
+        entry_count: total_entry_count.min(u8::MAX as usize) as u8,
+        subtree_count: subtrees.len().min(u8::MAX as usize) as u8,
+        sha: sha_array,
+        subtrees: if subtrees.is_empty() { None } else { Some(subtrees) },
+    })
+    // todo!()
+    // Err("Just testing out".to_string())
+}
 #[derive(Clone)]
 pub struct CacheTreeEntry {
     pub path: Vec<u8>,
@@ -331,8 +432,9 @@ impl TryFrom<Vec<IndexEntry>> for CacheTreeEntry {
             }
         }
 
-        println!("PATH_MAP: {:?}", path_map);
-        Err("I will implement it later!".to_string())
+        println!("PATH_MAP: {:#?}", path_map);
+        // Err("I will implement it later!".to_string())
+        build_tree("", &path_map)
     }
 }
 
@@ -386,24 +488,24 @@ fn create_cache(reader: &mut BufReader<&[u8]>) -> CacheTreeEntry {
     let x = new_path.as_bytes_with_nul().to_owned();
 
     // ASCII Entry count
-    reader.read_exact(&mut single_byte);
+    reader.read_exact(&mut single_byte).unwrap();
     let entry_count = u8::from_be_bytes(single_byte) - 48;
 
     // ASCII Space
-    reader.read_exact(&mut single_byte);
+    reader.read_exact(&mut single_byte).unwrap();
 
     // ASCII number of subtrees
-    reader.read_exact(&mut single_byte);
+    reader.read_exact(&mut single_byte).unwrap();
     let subtree_count = u8::from_be_bytes(single_byte) - 48;
     
     let subtrees: Option<Vec<CacheTreeEntry>>;
 
     // ASCII newline
-    reader.read_exact(&mut single_byte);
+    reader.read_exact(&mut single_byte).unwrap();
     let mut sha = [0u8; 20];
     
     // SHA tree object
-    reader.read_exact(&mut sha);
+    reader.read_exact(&mut sha).unwrap();
 
     if subtree_count > 0 {
         let mut trees: Vec<CacheTreeEntry> = Vec::new();
@@ -506,10 +608,11 @@ impl WarpIndex {
 
         // Create a WarpIndex from the index fd
         let warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
-
-        // I need to create a CacheEntry from the index entries file.
-        // Should we do sth like From/TryFrom<Vec<IndexEntry>> for CacheEntry 
-        println!("{:#?}", warp_index);
+        let x = CacheTreeEntry::try_from(warp_index.entries).unwrap();
+        println!("{:#?}", x);
+        // TODO I need to create a CacheEntry from the index entries file.
+        // TODO Should we do sth like From/TryFrom<Vec<IndexEntry>> for CacheEntry 
+        // println!("{:#?}", warp_index);
         // let _ = CacheTreeEntry::try_from(warp_index.entries);
         // Using the IndexEntry we create the extensions.
     }
@@ -528,11 +631,8 @@ impl WarpIndex {
                 index_entries.push(index_entry);
             }
             
-
+            // Create a WarpIndex from index_entries and write it to the index file.
             fs::OpenOptions::new().write(true).open(index).unwrap().write_all(&WarpIndex::without_extension(index_entries).to_bytes()).expect("Unable to write to the index file");
-
-            // Create the IndexEntries from the paths
-            // IndexEntry
         } else {
             // Get the current index binary file
             let mut index_path = std::env::current_dir().unwrap();
@@ -561,6 +661,7 @@ impl WarpIndex {
             index_entries.sort_by(|a, b| a.path.cmp(&b.path));
 
             let new_warp_index = WarpIndex::without_extension(index_entries);
+            
             // Write the bytes of this WarpIndex to the index file, we convert it to bytes format
             fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&new_warp_index.to_bytes()).expect("Unable to write to the index file");
         }
@@ -591,7 +692,7 @@ impl TryFrom<&mut Cursor<&[u8]>> for WarpIndex {
         }
         let mut signature = [0u8; 4];
         let extensions;
-        reader.read_exact(&mut signature);
+        reader.read_exact(&mut signature).unwrap();
         if signature == [84, 82, 69, 69] {
             reader.set_position(reader.position() - 4);
             extensions = Some(IndexExtension::try_from(&mut *reader).unwrap());
@@ -603,7 +704,7 @@ impl TryFrom<&mut Cursor<&[u8]>> for WarpIndex {
         // otherwise extensions is none.
 
         let mut checksum = [0u8; 20];
-        reader.read_exact(&mut checksum);
+        reader.read_exact(&mut checksum).unwrap();
 
         Ok(WarpIndex {
             header,
