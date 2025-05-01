@@ -297,56 +297,68 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexExtension {
 }
 
 fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result<CacheTreeEntry, String> {
-    // We are able to get the next directories of the root using a hashset.
-    let mut sub_dirs = HashSet::new();
-
+    // Get all subdirectories of the current path
+    let mut subdirs = HashSet::new();
+    
     for dir_path in path_map.keys() {
         if dir_path.starts_with(path) && dir_path != path {
             let remaining = &dir_path[path.len()..];
-            println!("REMS: {}, PATH: {}", remaining, dir_path);
             if !remaining.is_empty() {
                 let first_subdir = if path.is_empty() {
-                    remaining.split('/').next().unwrap().to_string()
+                    remaining.split('/').next().unwrap_or("").to_string()
                 } else {
-                    remaining.strip_prefix('/').unwrap_or(remaining).split('/').next().unwrap().to_string()
+                    remaining.strip_prefix('/').unwrap_or(remaining).split('/').next().unwrap_or("").to_string()
                 };
-
-                println!("FIRST DIRS: {}", first_subdir);
+                
                 if !first_subdir.is_empty() {
-                    sub_dirs.insert(first_subdir);
+                    subdirs.insert(first_subdir);
                 }
             }
         }
     }
-
-    // println!("SUBDIRS: {:?}", sub_dirs);
+    
+    // Get entries in the current directory
     let current_entries = path_map.get(path).cloned().unwrap_or_default();
-
-    let mut subtrees= Vec::new();
+    
+    // Prepare subtrees
+    let mut subtrees = Vec::new();
     let mut total_entry_count = current_entries.len();
-
-    for subdir in sub_dirs {
+    
+    // Convert HashSet to Vec for sorting
+    let mut subdirs_vec: Vec<String> = subdirs.into_iter().collect();
+    // Sort the subdirectories lexicographically
+    subdirs_vec.sort();
+    
+    for subdir in subdirs_vec {
         let subdir_path = if path.is_empty() {
             subdir.clone()
         } else {
             format!("{}/{}", path, subdir)
         };
-
+        
         let subtree = build_tree(&subdir_path, path_map)?;
         total_entry_count += subtree.entry_count as usize;
         subtrees.push(subtree);
     }
-
+    
     // Create the tree content to hash
     let mut tree_content = Vec::new();
     
+    // Sort file entries before adding them
+    let mut sorted_entries = current_entries.clone();
+    sorted_entries.sort_by(|a, b| {
+        let a_name = a.path.split('/').last().unwrap_or(&a.path);
+        let b_name = b.path.split('/').last().unwrap_or(&b.path);
+        a_name.cmp(b_name)
+    });
+    
     // Add entries for files in this directory
-    for entry in &current_entries {
+    for entry in &sorted_entries {
         let filename = entry.path.split('/').last().unwrap_or(&entry.path);
         
         // Format: "[mode] [filename]\0[SHA]"
         let octal = format!("{:o}", entry.mode);
-        let mode_bytes = octal.as_bytes();
+        let mode_bytes = octal.as_bytes(); // Convert mode to octal
         let space = b" ";
         let filename_bytes = filename.as_bytes();
         let null_byte = b"\0";
@@ -355,12 +367,26 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
         tree_content.extend_from_slice(space);
         tree_content.extend_from_slice(filename_bytes);
         tree_content.extend_from_slice(null_byte);
+        
+        // Use the SHA bytes directly - they're already in binary format
         tree_content.extend_from_slice(&entry.sha);
     }
     
-    // Add entries for subdirectories
+    // Subtrees are already sorted by directory name since we sorted subdirs_vec
     for subtree in &subtrees {
-        let dirname = subtree.path.split(|&b| b == b'/').last().unwrap_or(&subtree.path);
+        // Extract just the directory name (last component of path)
+        // First, strip the null terminator if present
+        let path_vec = if subtree.path.last() == Some(&0) {
+            &subtree.path[..subtree.path.len() - 1]
+        } else {
+            &subtree.path[..]
+        };
+        
+        // Convert to string and get the last segment
+        let path_str = std::str::from_utf8(path_vec)
+            .map_err(|_| "Invalid UTF-8 in path".to_string())?;
+        
+        let dirname = path_str.split('/').last().unwrap_or(path_str).as_bytes();
         
         // Format: "40000 [dirname]\0[SHA]"
         let mode_bytes = b"40000";
@@ -376,6 +402,8 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     
     // Hash the tree content
     let header = format!("tree {}", tree_content.len());
+    println!("TREE OBJECT: {:?}", tree_content);
+    println!("LEN : {}", tree_content.len());
     let mut hasher = Sha1::new();
     hasher.update(header.as_bytes());
     hasher.update(&[0]);
@@ -385,16 +413,26 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     let mut sha_array = [0u8; 20];
     sha_array.copy_from_slice(&sha);
     
+    // Get just the directory name for the path - not the full path
+    let dirname = if path.is_empty() {
+        // Root directory - just use a null byte
+        vec![0]
+    } else {
+        // For subdirectories, use just the last component of the path
+        let last_component = path.split('/').last().unwrap_or(path);
+        let mut path_bytes = last_component.as_bytes().to_vec();
+        path_bytes.push(0); // Add null terminator
+        path_bytes
+    };
+    
     // Create and return the CacheTreeEntry
     Ok(CacheTreeEntry {
-        path: path.as_bytes().to_vec(),
+        path: dirname,
         entry_count: total_entry_count.min(u8::MAX as usize) as u8,
         subtree_count: subtrees.len().min(u8::MAX as usize) as u8,
         sha: sha_array,
         subtrees: if subtrees.is_empty() { None } else { Some(subtrees) },
     })
-    // todo!()
-    // Err("Just testing out".to_string())
 }
 #[derive(Clone)]
 pub struct CacheTreeEntry {

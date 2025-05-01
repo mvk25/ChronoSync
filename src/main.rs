@@ -18,11 +18,11 @@ use crate::args::Warp;
 
 #[warn(unused_variables)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // let mut reader = Cursor::new(INDEX_DATA);
-    // println!("{:#?}", WarpIndex::try_from(&mut reader));
+    let mut reader = Cursor::new(INDEX_DATA);
+    println!("{:#?}", WarpIndex::try_from(&mut reader));
     
-    // let mut reader = Cursor::new(NO_TREE);
-    // println!("{:#?}", WarpIndex::try_from(&mut reader));
+    let mut reader = Cursor::new(NO_TREE);
+    println!("{:#?}", WarpIndex::try_from(&mut reader));
     // // Ok(())
     let args = Warp::parse();
     match args.command {
