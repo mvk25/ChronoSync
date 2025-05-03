@@ -37,7 +37,7 @@ When you initialize a ChronoSync repository with `warp init`, it creates a `.war
 
 2. **Object Storage**
    - Files are compressed using zlib
-   - Stored in `.warp/objects/blobs/`
+   - Stored in `.warp/objects/`
    - Content-addressable (named by hash)
 
 
@@ -68,7 +68,7 @@ cargo run
 Once you’ve built the project with Cargo, you can run ChronoSync directly from the terminal.
 
 ```bash
-$ warp --help
+$ ~/<file_location>/target/release/ChronoSync --help
 ```
 
 ### 📖 Help Output
@@ -95,25 +95,23 @@ Options:
 
 ### Initialize a repository
 
-warp here could be how you have saved the name of the executable
 ```bash
-warp init
+$ ~/<file_location>/target/release/ChronoSync init
 ```
 
 ### Compute a hash of a file
 
 ```bash
-warp hash <PATH>
+$ ~/<file_location>/target/release/ChronoSync <FILENAME>
 ```
 
 ### Update index with a file
 
 ```bash
-$ warp update-index --help
+$ ~/<file_location>/target/release/ChronoSync update-index --add <FILENAMES>
 ```
 
+### Write to a tree after update
+```bash
+$ ~/<file_location>/target/release/ChronoSync write-tree
 ```
-Usage: ChronoSync update-index --add <FILENAME>...
-
-Options:
-  -h, --help      Print help
