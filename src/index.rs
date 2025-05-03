@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs, hash::Hash, io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs,io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
@@ -254,6 +254,16 @@ pub struct IndexExtension {
 }
 
 impl IndexExtension {
+    pub fn from_cache(tree_cache: CacheTreeEntry) -> Self {
+        let mut cache_bytes = Vec::new();
+        tree_cache.to_bytes(&mut cache_bytes);
+
+        IndexExtension {
+            signature: [84, 82, 69, 69],
+            extension_size: cache_bytes.len() as u32,
+            extension_data: tree_cache
+        }
+    }
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -408,6 +418,8 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     hasher.update(header.as_bytes());
     hasher.update(&[0]);
     hasher.update(&tree_content);
+
+    println!("{:?}", hasher);
     let sha = hasher.finalize();
     
     let mut sha_array = [0u8; 20];
@@ -645,14 +657,22 @@ impl WarpIndex {
         let _ = fs::File::open(&index_path).unwrap().read_to_end(&mut buffer);
 
         // Create a WarpIndex from the index fd
-        let warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
-        let x = CacheTreeEntry::try_from(warp_index.entries).unwrap();
-        println!("{:#?}", x);
-        // TODO I need to create a CacheEntry from the index entries file.
-        // TODO Should we do sth like From/TryFrom<Vec<IndexEntry>> for CacheEntry 
-        // println!("{:#?}", warp_index);
-        // let _ = CacheTreeEntry::try_from(warp_index.entries);
-        // Using the IndexEntry we create the extensions.
+        let mut warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
+        
+        // Create a CacheEntry from the index entries file.
+        let tree_cache = CacheTreeEntry::try_from(warp_index.entries.clone()).unwrap();
+
+        let extension = IndexExtension::from_cache(tree_cache);
+
+        warp_index.extensions = Some(extension);
+        // Create the extension struct now
+
+        // Get the current index binary file
+        let mut index_path = std::env::current_dir().unwrap();
+        index_path.push(".warp");
+        index_path.push("index");
+
+        fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&warp_index.to_bytes()).expect("Unable to write to index file");
     }
 
     pub fn update_index(paths: Vec<PathBuf>) {
