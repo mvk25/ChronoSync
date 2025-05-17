@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs,io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs,io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::{self, PathBuf}};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
@@ -456,7 +456,7 @@ pub struct CacheTreeEntry {
 }
 
 impl TryFrom<Vec<IndexEntry>> for CacheTreeEntry {
-    type Error = String; // Later!
+    type Error = String; //TODO: Later!
 
     fn try_from(entries: Vec<IndexEntry>) -> Result<Self, Self::Error> {
         if entries.is_empty() {
@@ -464,7 +464,7 @@ impl TryFrom<Vec<IndexEntry>> for CacheTreeEntry {
         }
 
         let mut path_map: HashMap<String, Vec<IndexEntry>> = HashMap::new();
-
+        println!("{:?}", entries);
         for entry in entries {
             let path = entry.path.clone();
 
@@ -489,6 +489,9 @@ impl TryFrom<Vec<IndexEntry>> for CacheTreeEntry {
 }
 
 impl CacheTreeEntry {
+    // Convert this struct to byte form. The reason why it is taking a mutable reference
+    // to a Vec<u8> is so that this function can be called recursively and still 
+    // be able to build the bytes form correctly.
     pub fn to_bytes(&self, bytes: &mut Vec<u8>) -> Vec<u8> {
         // let mut bytes = Vec::new();
 
@@ -538,24 +541,24 @@ fn create_cache(reader: &mut BufReader<&[u8]>) -> CacheTreeEntry {
     let x = new_path.as_bytes_with_nul().to_owned();
 
     // ASCII Entry count
-    reader.read_exact(&mut single_byte).unwrap();
+    reader.read_exact(&mut single_byte);
     let entry_count = u8::from_be_bytes(single_byte) - 48;
 
     // ASCII Space
-    reader.read_exact(&mut single_byte).unwrap();
+    reader.read_exact(&mut single_byte);
 
     // ASCII number of subtrees
-    reader.read_exact(&mut single_byte).unwrap();
+    reader.read_exact(&mut single_byte);
     let subtree_count = u8::from_be_bytes(single_byte) - 48;
     
     let subtrees: Option<Vec<CacheTreeEntry>>;
 
     // ASCII newline
-    reader.read_exact(&mut single_byte).unwrap();
+    reader.read_exact(&mut single_byte);
     let mut sha = [0u8; 20];
     
     // SHA tree object
-    reader.read_exact(&mut sha).unwrap();
+    reader.read_exact(&mut sha);
 
     if subtree_count > 0 {
         let mut trees: Vec<CacheTreeEntry> = Vec::new();
@@ -648,7 +651,7 @@ impl WarpIndex {
 
     pub fn write_tree() {
         // We create an index from the file
-        let mut index_path = std::env::current_dir().unwrap();
+        let mut index_path = std::env::current_dir().unwrap(); //TODO : Traverse up the tree and find .git file instead of this: Err!
         index_path.push(".warp");
         index_path.push("index");
 
@@ -672,6 +675,7 @@ impl WarpIndex {
         index_path.push(".warp");
         index_path.push("index");
 
+        // Write to file.
         fs::OpenOptions::new().write(true).open(&index_path).unwrap().write_all(&warp_index.to_bytes()).expect("Unable to write to index file");
     }
 

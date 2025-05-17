@@ -32,5 +32,9 @@ pub enum Commands {
         )]
         add: Vec<PathBuf>
     },
-    WriteTree
+    WriteTree,
+    TestTree {
+        #[arg(required = true)]
+        path: PathBuf
+    },
 }
