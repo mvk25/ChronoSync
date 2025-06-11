@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{Error, Read};
 use sha1::{Sha1, Digest};
 use std::sync::OnceLock;
+use colored::Colorize;
 
 #[allow(dead_code)]
 
@@ -18,6 +19,8 @@ pub fn init() -> Result<(), Box<dyn std::error::Error>> {
     // wherever this function is called on, and restrict it from continuing, since we have a .warp file
     // already initialised. We know to have a way of knowing the root directory(This should be known by 
     // the first init call), OnceLock is not working!!.
+
+    // Also we should propagate up the cwd to find the .warp file instead of what we are currently doing.
 
     // Initialise our working directory
     if ROOT.set(env::current_dir().unwrap()).is_err() {
@@ -57,7 +60,11 @@ pub fn init() -> Result<(), Box<dyn std::error::Error>> {
             push_recursive_dir(root.clone(), "refs", vec!["heads", "tags"]);
             push_recursive_dir(root.clone(), "objects", vec!["info", "pack"]);
             push_recursive_dir(root.clone(), "branches", vec![]);
-            println!("{}", root.display());
+
+            // We should probably print something to the terminal here.
+            println!("{}", "hint: Using .warp as the default directory for Warp data.".yellow());
+            println!("{}", "hint: Feature for customizing default directory should be added soon".yellow());
+            println!("Initialised empty Warp repository in {}", root.display().to_string().yellow());
             
         },
         Err(_) => todo!(),

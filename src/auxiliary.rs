@@ -26,7 +26,6 @@ pub fn push_recursive_dir(mut path: PathBuf, dir: &str, end_points: Vec<&str>) {
             end_points.iter().for_each(|endpoint| {
                 let mut path_new = path.clone();
                 path_new.push(endpoint);
-                println!("{}", path_new.display());
                 fs::create_dir(path_new).unwrap();
             });
         },
