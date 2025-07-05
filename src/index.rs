@@ -216,9 +216,11 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexEntry {
     type Error = String; // TODO: I will write the error logic some other time lol(Everything seems to work fine for now).
 
     fn try_from(reader: &mut Cursor<&[u8]>) -> Result<Self, Self::Error> {
+        // The first 10 elements in the IndexEntry structs are all u32's.
         let mut buffer = [0u8; 40];
         reader.read_exact(&mut buffer).unwrap();
-
+    
+        // Map them to a vector of u32
         let values = buffer.chunks_exact(4).map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap())).collect::<Vec<u32>>();
         let mut sha = [0u8; 20];
         reader.read_exact(&mut sha).unwrap();
@@ -232,6 +234,8 @@ impl TryFrom<&mut Cursor<&[u8]>> for IndexEntry {
         reader.read_exact(&mut path).unwrap();
 
         let mut single_byte = [0u8; 1];
+
+        // Read the variable null bytes padding.
         while let Ok(_) = reader.read_exact(&mut single_byte) {
             if single_byte[0] != 0 {
                 let current_pos = reader.position();
@@ -310,6 +314,7 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     // Get all subdirectories of the current path
     let mut subdirs = HashSet::new();
     
+    // This for loop will get the first subdirectory next to the path in the build tree function
     for dir_path in path_map.keys() {
         if dir_path.starts_with(path) && dir_path != path {
             let remaining = &dir_path[path.len()..];
@@ -326,6 +331,8 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
             }
         }
     }
+
+    println!("SUBDIRS {:?}", subdirs);
     
     // Get entries in the current directory
     let current_entries = path_map.get(path).cloned().unwrap_or_default();
@@ -346,6 +353,7 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
             format!("{}/{}", path, subdir)
         };
         
+        println!("SUBDIRECTORY: {}", subdir);
         let subtree = build_tree(&subdir_path, path_map)?;
         total_entry_count += subtree.entry_count as usize;
         subtrees.push(subtree);
@@ -361,28 +369,38 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
         let b_name = b.path.split('/').last().unwrap_or(&b.path);
         a_name.cmp(b_name)
     });
-    
-    // Add entries for files in this directory
+
+
+    /// TODO: We need to loop through the subtrees and the entries at the same time
+    // We sort them using the name of the directory or the file.
+
+    // So i will be using HashMaps to store the name of the directory or file name as the key
+    // and the Vec<u8> of the respective entry as the value and sort them in each CacheEntry before returning them;
+
+    let mut tree_map: HashMap<&str, Vec<u8>> = HashMap::new();
+
+    // This is for the entries in a directory.
     for entry in &sorted_entries {
-        let filename = entry.path.split('/').last().unwrap_or(&entry.path);
-        
-        // Format: "[mode] [filename]\0[SHA]"
+        let filename = entry.path.split("/").last().unwrap_or(&entry.path);
+
+        let mut byte_content: Vec<u8> = Vec::new();
+
         let octal = format!("{:o}", entry.mode);
-        let mode_bytes = octal.as_bytes(); // Convert mode to octal
+        let mode_bytes = octal.as_bytes();
         let space = b" ";
         let filename_bytes = filename.as_bytes();
-        let null_byte = b"\0";
-        
-        tree_content.extend_from_slice(mode_bytes);
-        tree_content.extend_from_slice(space);
-        tree_content.extend_from_slice(filename_bytes);
-        tree_content.extend_from_slice(null_byte);
-        
-        // Use the SHA bytes directly - they're already in binary format
-        tree_content.extend_from_slice(&entry.sha);
+        let null_bytes = b"\0";
+
+        byte_content.extend_from_slice(mode_bytes);
+        byte_content.extend_from_slice(space);
+        byte_content.extend_from_slice(filename_bytes);
+        byte_content.extend_from_slice(null_bytes);
+        byte_content.extend_from_slice(&entry.sha);
+
+        tree_map.insert(filename, byte_content);
     }
-    
-    // Subtrees are already sorted by directory name since we sorted subdirs_vec
+
+    // Tree entries for a directory.
     for subtree in &subtrees {
         // Extract just the directory name (last component of path)
         // First, strip the null terminator if present
@@ -391,24 +409,87 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
         } else {
             &subtree.path[..]
         };
-        
+
         // Convert to string and get the last segment
         let path_str = std::str::from_utf8(path_vec)
             .map_err(|_| "Invalid UTF-8 in path".to_string())?;
         
+        println!("PATH STR: {}", path_str);
+
         let dirname = path_str.split('/').last().unwrap_or(path_str).as_bytes();
-        
-        // Format: "40000 [dirname]\0[SHA]"
+        println!("DIR NAME: {:?}\t PATH STR: {}", dirname, path_str);
+        let mut byte_content = Vec::new();
         let mode_bytes = b"40000";
-        let space = b" ";
-        let null_byte = b"\0";
+
+        byte_content.extend_from_slice(mode_bytes);
+        byte_content.extend_from_slice(b" ");
+        byte_content.extend_from_slice(dirname);
+        byte_content.extend_from_slice(b"\0");
+        byte_content.extend_from_slice(&subtree.sha);
         
-        tree_content.extend_from_slice(mode_bytes);
-        tree_content.extend_from_slice(space);
-        tree_content.extend_from_slice(dirname);
-        tree_content.extend_from_slice(null_byte);
-        tree_content.extend_from_slice(&subtree.sha);
+        tree_map.insert(std::str::from_utf8(dirname).expect("Invald UTF-8"), byte_content);
     }
+
+    println!("TREE MAP{:?}", tree_map);
+
+
+    // Sort the index entries and the directory entries and concat the values later
+
+    let mut vec_map = tree_map.into_iter().collect::<Vec<(&str, Vec<u8>)>>();
+    vec_map.sort_by(|a, b| a.0.cmp(b.0));
+
+    vec_map.iter().for_each(|(_, y)| tree_content.extend_from_slice(y));
+
+    println!("TREE CONTENT: {:?}", tree_content);
+    
+    // Add entries for files in this directory
+    // for entry in &sorted_entries {
+    //     let filename = entry.path.split('/').last().unwrap_or(&entry.path);
+        
+    //     // Format: "[mode] [filename]\0[SHA]"
+    //     let octal = format!("{:o}", entry.mode);
+    //     let mode_bytes = octal.as_bytes(); // Convert mode to octal
+    //     let space = b" ";
+    //     let filename_bytes = filename.as_bytes();
+    //     let null_byte = b"\0";
+        
+    //     tree_content.extend_from_slice(mode_bytes);
+    //     tree_content.extend_from_slice(space);
+    //     tree_content.extend_from_slice(filename_bytes);
+    //     tree_content.extend_from_slice(null_byte);
+        
+    //     // Use the SHA bytes directly - they're already in binary format
+    //     tree_content.extend_from_slice(&entry.sha);
+    // }
+
+    
+    // Subtrees are already sorted by directory name since we sorted subdirs_vec
+    // for subtree in &subtrees {
+    //     // Extract just the directory name (last component of path)
+    //     // First, strip the null terminator if present
+    //     let path_vec = if subtree.path.last() == Some(&0) {
+    //         &subtree.path[..subtree.path.len() - 1]
+    //     } else {
+    //         &subtree.path[..]
+    //     };
+        
+    //     // Convert to string and get the last segment
+    //     let path_str = std::str::from_utf8(path_vec)
+    //         .map_err(|_| "Invalid UTF-8 in path".to_string())?;
+        
+    //     let dirname = path_str.split('/').last().unwrap_or(path_str).as_bytes();
+        
+    //     // Format: "40000 [dirname]\0[SHA]"
+    //     let mode_bytes = b"40000";
+    //     let space = b" ";
+    //     let null_byte = b"\0";
+        
+    //     tree_content.extend_from_slice(mode_bytes);
+    //     tree_content.extend_from_slice(space);
+    //     tree_content.extend_from_slice(dirname);
+    //     tree_content.extend_from_slice(null_byte);
+    //     tree_content.extend_from_slice(&subtree.sha);
+    // }
     
     // Hash the tree content
     let header = format!("tree {}", tree_content.len());
@@ -419,7 +500,7 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     hasher.update(&[0]);
     hasher.update(&tree_content);
 
-    println!("{:?}", hasher);
+    println!("HASHER {:?}", hasher);
     let sha = hasher.finalize();
     
     let mut sha_array = [0u8; 20];
@@ -651,7 +732,7 @@ impl WarpIndex {
 
     pub fn write_tree() {
         // We create an index from the file
-        let mut index_path = std::env::current_dir().unwrap(); //TODO : Traverse up the tree and find .git file instead of this: Err!
+        let mut index_path = std::env::current_dir().unwrap(); //TODO : Traverse up the tree and find .warp file instead of this: Err!
         index_path.push(".warp");
         index_path.push("index");
 
@@ -660,6 +741,9 @@ impl WarpIndex {
         let _ = fs::File::open(&index_path).unwrap().read_to_end(&mut buffer);
 
         // Create a WarpIndex from the index fd
+        // We create the Cursor from the buffer which holds the index items.
+        // The cursor will be used to build different parts of the WarpIndex.
+        // TODO: A builder can be used here instead of try_from in the future!
         let mut warp_index = WarpIndex::try_from(&mut Cursor::new(buffer.as_slice())).unwrap();
         
         // Create a CacheEntry from the index entries file.
