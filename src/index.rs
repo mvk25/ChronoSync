@@ -1,5 +1,6 @@
 use core::fmt;
-use std::{collections::{HashMap, HashSet}, ffi::CString, fmt::Debug, fs,io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::{self, PathBuf}};
+use std::{collections::{HashMap, HashSet}, env, ffi::CString, fmt::Debug, fs, io::{BufReader, Cursor, Read, Write}, os::unix::fs::MetadataExt, path::{self, PathBuf}};
+use flate2::{write::ZlibEncoder, Compression};
 use hex_literal::hex;
 use chrono::DateTime;
 use sha1::{Sha1, Digest};
@@ -353,7 +354,7 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
             format!("{}/{}", path, subdir)
         };
         
-        println!("SUBDIRECTORY: {}", subdir);
+        println!("SUBDIRECTORY: {}", subdir_path);
         let subtree = build_tree(&subdir_path, path_map)?;
         total_entry_count += subtree.entry_count as usize;
         subtrees.push(subtree);
@@ -492,11 +493,12 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
     // }
     
     // Hash the tree content
+    //TODO: Create a variable representing the entire tree object.
     let header = format!("tree {}", tree_content.len());
     println!("TREE OBJECT: {:?}", tree_content);
     println!("LEN : {}", tree_content.len());
     let mut hasher = Sha1::new();
-    hasher.update(header.as_bytes());
+    hasher.update(header.as_bytes()); 
     hasher.update(&[0]);
     hasher.update(&tree_content);
 
@@ -517,6 +519,25 @@ fn build_tree(path: &str, path_map: &HashMap<String, Vec<IndexEntry>>) -> Result
         path_bytes.push(0); // Add null terminator
         path_bytes
     };
+
+    // Write the tree to an object file.
+    let mut encoded_tree_object = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoded_tree_object.write_all(&[header.as_bytes(), &[0], &tree_content].concat()).expect("Error writing to compressing stream");
+    let compressed_bytes = encoded_tree_object.finish().expect("Error compressing tree content");
+
+    let mut root = env::current_dir().expect("Unable to get cwd");
+    root.push(".warp");
+    root.push("objects");
+
+    let sha_hex = hex::encode(&sha_array);
+    let (dir_hash, file_hash) = sha_hex.split_at(2);
+    crate::auxiliary::push_dir_with_file(root.clone(), dir_hash, file_hash);
+
+    root.push(dir_hash);
+    root.push(file_hash);
+
+    let mut compressed_file = fs::File::create(root).expect("Unable to create file");
+    compressed_file.write(&compressed_bytes).expect("Error writing to file");
     
     // Create and return the CacheTreeEntry
     Ok(CacheTreeEntry {
