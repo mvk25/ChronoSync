@@ -3,6 +3,7 @@ mod commands;
 mod auxiliary;
 mod blob;
 mod index;
+mod commit;
 
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -11,8 +12,9 @@ use blob::Blob;
 use clap::Parser;
 use commands::{init, add};
 use index::{WarpIndex, INDEX_DATA, NO_TREE};
-use crate::args::Commands::{Init, Hash, Add, UpdateIndex, WriteTree, TestTree};
+use crate::args::Commands::{Init, Hash, Add, UpdateIndex, WriteTree, TestTree, CommitTree};
 use crate::args::Warp;
+use crate::commit::Commit;
 
 
 
@@ -37,6 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         WriteTree => {
             // Creating an extension from an entry.c
             WarpIndex::write_tree();
+            Ok(())
+        },
+        CommitTree { tree, parents, message } => {
+            let new_commit = Commit::new(tree, parents, message);
+            Commit::compress_to_object(&new_commit);
             Ok(())
         },
         TestTree { path } => {

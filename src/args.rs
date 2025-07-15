@@ -33,6 +33,25 @@ pub enum Commands {
         add: Vec<PathBuf>
     },
     WriteTree,
+    CommitTree {
+        tree: String,
+        #[arg(
+            short = 'p',
+            long,
+            value_name = "parent",
+            required = false,
+            help = "ID of parent commit object"
+        )]
+        parents: Option<String>,
+        #[arg(
+            short = 'm',
+            long,
+            value_name = "message",
+            required = false,
+            help = "Commit message"
+        )]
+        message: String
+    },
     TestTree {
         #[arg(required = true)]
         path: PathBuf
